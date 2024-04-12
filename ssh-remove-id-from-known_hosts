@@ -1,0 +1,51 @@
+#!/bin/bash
+
+
+## This script is used to remove lines containing an IP address from the ~/.ssh/known_hosts file
+## It is the partner for ssh-copy-id
+
+## The reason for using it is in a lab setting, when servers are being rebuilt often, you get an error that the
+## key already exists and is associated with a different server. 
+
+## Last updated: 12/04/24
+
+# Check if the first argument is --help or -h, or if no arguments are provided
+if [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]] || [[ -z "$1" ]]; then
+    echo "Usage: ssh-remove-id-from-known_hosts <ip address>"
+    echo ""
+    echo "This script removes the specified IP address from the known_hosts file."
+    echo "It prompts for confirmation before making any changes."
+    echo ""
+    echo "Options:"
+    echo " --help, -h    Display this help message and exit."
+    exit 0
+fi
+
+ip=$1
+
+
+# Quick sanity check to see if the input is an IP address
+if [[ ! $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "Invalid IP address"
+    exit 1
+fi
+
+
+# Search for the IP address in the known_hosts file
+grep -n $ip ~/.ssh/known_hosts
+read -p "Do you want to delete these lines? (y/n) " answer
+
+
+# Confirm the lines to be deleted
+if [ "$answer" == "y" ]; then
+    sed -i "/$ip/d" ~/.ssh/known_hosts
+    echo "Lines containing $ip have been removed from known_hosts file"
+
+
+# If no lines were deleted, inform the operator
+else
+    echo "No lines were deleted"
+fi
+
+
+# End script
