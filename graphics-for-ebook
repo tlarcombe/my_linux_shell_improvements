@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# This script will capture the desktop
+# - crop everything but the right hand screen
+# - remove the title bar
+# - convert the image to 800 x the ratio
+# - copy the output to the clipboard
+
+# Requirements are scrot, xdotool, imagemagik, libreoffice, xclip
+
+# Easiest usage - bind to a keyboard combination via your WM
+
+scrot -z -c /tmp/res1.png
+convert /tmp/res1.png -crop 1360x733+1921+33 /tmp/res2.png
+convert /tmp/res2.png -resize 800x600 /tmp/res3.png
+xclip -in -selection clipboard -target image/png "/tmp/res3.png"
+rm "/tmp/res1.png"
+rm "/tmp/res2.png"
+rm "/tmp/res3.png"
+notify-send 'Right Hand Screen: Copied, Cropped, Resized and Clipboarded.' --icon=dialogue-information
+
+xdotool search --name Writer
+xdotool key ctrl+v
