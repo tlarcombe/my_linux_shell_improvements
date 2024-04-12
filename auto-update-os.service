@@ -1,0 +1,7 @@
+[Unit]
+Description=Update system packages using yay
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c "/usr/bin/yay -Syu --noconfirm ; /usr/bin/curl -d 'YAY! Update completed' http://ntfy.sh/<your ntfy channel here>"
+User=<your username here - do not use root!>
