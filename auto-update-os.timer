@@ -1,0 +1,9 @@
+[Unit]
+Description=Runs auto-update-os every day at 8am
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+Unit=auto-update-os.service
+
+[Install]
+WantedBy=timers.target
