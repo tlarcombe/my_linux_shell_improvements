@@ -1,0 +1,39 @@
+#!/bin/bash
+
+## This script launches multiple chat applications from a single click on my taskbar
+##
+## The reason for using it is just time saving
+
+## Last updated 12/04/24
+
+
+# Check if the first argument is --help or -h, or if no arguments are provided
+if [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]] || [[ -z "$1" ]]; then
+    echo "Usage: launch_multiple_chats"
+    echo ""
+    echo "This script launches multiple chats."
+    echo ""
+    echo "Change the app-id=<your_unique_application_id> with the code from chromium/chrome/brave when you created the app shortcut"
+    echo ""
+    echo "Options:"
+    echo " --help, -h    Display this help message and exit."
+    exit 0
+fi
+
+
+
+# Messenger
+/usr/bin/chromium --profile-directory=Default --app-id=<your_unique_application_id>
+
+#WhatsApp
+/usr/bin/chromium --profile-directory=Default --app-id=<your_unique_application_id>
+
+#Google Messages
+/usr/bin/chromium --profile-directory=Default --app-id=<your_unique_application_id>
+
+#Signal
+signal-desktop -- %u &
+
+disown
+
+exit
