@@ -1,0 +1,79 @@
+#!/bin/sh
+
+# variables
+VOSK_MODEL_PATH="/usr/local/bin/sh/nerd-dictation/model"
+INVIDIOUS_INSTANCE="https://yt.artemislena.eu" # some instances might not work
+
+# The most common reason this script fails is that the invidious instance has
+# been removed. The list of instances can be found at docs.invidious.io/instances
+# just pick another one and add it to the vairiable in line 5
+
+
+# stop current song, clear playlist
+# mpc stop
+# mpc clear
+
+# take mic input
+
+if [ -f $HOME/.cache/audio.wav ]; then
+    rm $HOME/.cache/audio.wav
+fi
+
+ffmpeg -y -f alsa -i default -acodec pcm_s16le -ac 1 -ar 44100 -t 4 -f wav $HOME/.cache/audio.wav
+
+# convert it into text & store it in `audio_input`
+
+if [ -f $HOME/.cache/audio_text.txt ]; then
+    rm $HOME/.cache/audio_text.txt
+fi
+
+vosk-transcriber -m $VOSK_MODEL_PATH -i $HOME/.cache/audio.wav -o $HOME/.cache/audio_text.txt
+read -r audio_input < $HOME/.cache/audio_text.txt
+
+# Audio confirmation notification
+# google_speech " All right.. let me play.. $audio_input" &
+echo "Searching for, $audio_input." | piper-tts --model /usr/local/bin/sh/en_GB-semaine-medium.onnx --output-raw | aplay -r 22050 -f S16_LE -t raw -
+
+echo "$audio_input" >> $HOME/Documents/music_list.txt
+
+# make youtube search query
+query="$(printf '%s' "song audio $audio_input" | tr ' ' '+' )"
+# echo "DEBUG: YouTube Search Query is $query"
+
+# search on invidous (youtube) instance for video id to make a url
+video_id="$(curl -s "$INVIDIOUS_INSTANCE/search?q=$query" | grep -Eo "watch\?v=.{11}" | head -n 1)"
+youtube_url="https://youtube.com/$video_id"
+# echo "DEBUG: The VideoID is $video_id"
+# echo "DEBUG: ...therefore the YouTube URL is $youtube_url"
+
+# get url for bestaudio stream from the youtube video
+audio_url="$(yt-dlp -f bestaudio --get-url "$youtube_url")"
+# echo "DEBUG: Finally, the audio URL is $audio_url"
+
+# add the track to mpd and play
+# mpc add "$audio_url"
+# mpc play
+
+# Get youtube video title for system notification
+title=$(yt-dlp --get-title "$youtube_url")
+notify-send "Playing: " "$title"
+
+echo $title >>  $HOME/Documents/music_list.txt
+
+echo -e "Adding $Title to the MusicRobot Library - in $HOME/Documents/MusicRobot"
+yt-dlp --extract-audio --audio-format mp3 -o "$HOME/Documents/MusicRobot/%(title)s.%(ext)s" $youtube_url &
+
+for file in $HOME/Documents/MusicRobot/*; do
+    # Check if the file is a regular file (not a directory)
+    if [ -f "$HOME/Documents/MusicRobot/$file" ]; then
+        # Use sed to remove the unwanted parts from the filename
+        new_name=$(echo "$HOME/Documents/MusicRobot/$file" | sed -E 's/(\s\[.*\]|\s\(.*\))//g')
+        # Rename the file
+        mv "$HOME/Documents/MusicRobot/$file" "$HOME/Documents/MusicRobot/$new_name"
+    fi
+done
+
+
+# Play using VLC Command line version
+cvlc "$audio_url"
+
