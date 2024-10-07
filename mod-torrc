@@ -1,0 +1,52 @@
+#!/bin/bash
+
+# Finding the torrc file and adding the line to define the exit node has always been a PIA. This is easier. chmod +x it and stick it in your path somewhere
+
+# Define the path to the torrc file
+TORRC_PATH="/home/username/.local/opt/tor-browser/app/Browser/TorBrowser/Data/Tor/torrc"
+
+# Define an associative array of country codes and names
+declare -A countries
+countries=(
+    ["AQ"]="Antarctica"
+    ["CY"]="Cyprus"
+    ["EE"]="Estonia"
+    ["FI"]="Finland"
+    ["IN"]="India"
+    ["IE"]="Ireland"
+    ["MU"]="Mauritius"
+    ["RS"]="Serbia"
+    ["CH"]="Switzerland"
+    ["UA"]="Ukraine"
+    ["US"]="United States"
+    ["AE"]="United Arab Emirates"
+    ["GB"]="United Kingdom"
+)
+
+# Function to display the menu
+display_menu() {
+    echo "Select a country for the Tor exit node:"
+    for code in "${!countries[@]}"; do
+        echo "$code) ${countries[$code]}"
+    done
+    echo "Q) Quit"
+}
+
+# Main loop
+while true; do
+    display_menu
+    read -p "Enter your choice: " choice
+
+    if [[ $choice == "Q" || $choice == "q" ]]; then
+        echo "Exiting script."
+        exit 0
+    elif [[ -n "${countries[$choice]}" ]]; then
+        # Update the torrc file
+        sed -i "s/^ExitNodes {.*}/ExitNodes {$choice}/" "$TORRC_PATH"
+        echo "Updated exit node to ${countries[$choice]} ($choice)"
+        echo "Please restart the Tor Browser for changes to take effect."
+        exit 0
+    else
+        echo "Invalid choice. Please try again."
+    fi
+done
