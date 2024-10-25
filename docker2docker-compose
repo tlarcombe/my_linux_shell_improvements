@@ -1,0 +1,193 @@
+## It does what it says on the tin.
+## If you run docker containers, you can docker ps the list into this script and generate the docker-compose.yml ro rebuild the system from the commandline.
+
+#!/bin/bash
+
+# Create Python script in a temporary file
+cat > /tmp/docker_to_compose.py << 'EOL'
+import yaml
+import sys
+import re
+from typing import List, Dict
+
+def parse_docker_ps_output(ps_output: str) -> List[Dict]:
+    services = []
+    lines = ps_output.strip().split('\n')[1:]  # Skip header line
+    
+    for line in lines:
+        parts = [part for part in re.split(r'\s{2,}', line.strip()) if part]
+        if len(parts) < 6:
+            continue
+            
+        # Parse ports
+        ports = []
+        if len(parts) > 5 and parts[5] != "":
+            port_mappings = parts[5].split(',')
+            for mapping in port_mappings:
+                mapping = mapping.strip()
+                if '->' in mapping:
+                    host, container = mapping.split('->')
+                    host = host.split(':')[-1].split('/')[0]
+                    container = container.split('/')[0]
+                    ports.append(f"{host}:{container}")
+        
+        # Extract container name
+        name = parts[-1]
+        
+        # Create service entry
+        service = {
+            'container_id': parts[0],
+            'image': parts[1],
+            'command': parts[2],
+            'created': parts[3],
+            'status': parts[4],
+            'ports': ports,
+            'name': name
+        }
+        services.append(service)
+    
+    return services
+
+def generate_docker_compose(services: List[Dict]) -> str:
+    compose_config = {
+        'version': '3',
+        'services': {}
+    }
+    
+    for service in services:
+        # Clean up service name
+        service_name = service['name'].replace('-1', '').replace('_', '-')
+        if '/' in service_name:  # Handle stack service names
+            service_name = service_name.split('/')[-1]
+        
+        service_config = {
+            'image': service['image'],
+            'container_name': service['name']
+        }
+        
+        # Add ports if present
+        if service['ports']:
+            service_config['ports'] = service['ports']
+            
+        # Add command if it's not the default
+        if service['command'] not in ['""', '']:
+            # Clean up command string
+            cmd = service['command'].strip('"')
+            if cmd.startswith('/'):
+                cmd = cmd.split()[0]  # Take just the command path
+            service_config['command'] = cmd
+            
+        # Add restart policy
+        service_config['restart'] = 'unless-stopped'
+        
+        compose_config['services'][service_name] = service_config
+    
+    return yaml.dump(compose_config, sort_keys=False, allow_unicode=True)
+
+if __name__ == "__main__":
+    ps_output = sys.stdin.read()
+    parsed_services = parse_docker_ps_output(ps_output)
+    compose_yaml = generate_docker_compose(parsed_services)
+    print(compose_yaml)
+EOL
+
+# Create the main script
+cat > docker-to-compose.sh << 'EOL'
+#!/bin/bash
+
+# Set script to exit on error
+set -e
+
+# Colors for output
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Function to print colored output
+print_status() {
+    echo -e "${GREEN}[*]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[!]${NC} $1"
+}
+
+# Check if Python3 is installed
+if ! command -v python3 &> /dev/null; then
+    echo "Python3 is required but not installed. Please install Python3 to continue."
+    exit 1
+fi
+
+# Check if PyYAML is installed
+if ! python3 -c "import yaml" &> /dev/null; then
+    print_warning "PyYAML is not installed. Attempting to install..."
+    pip3 install PyYAML || {
+        echo "Failed to install PyYAML. Please install it manually with: pip3 install PyYAML"
+        exit 1
+    }
+fi
+
+# Default output file
+OUTPUT_FILE="docker-compose.yml"
+
+# Parse command line arguments
+while getopts ":o:" opt; do
+    case $opt in
+        o)
+            OUTPUT_FILE="$OPTARG"
+            ;;
+        \?)
+            echo "Invalid option: -$OPTARG" >&2
+            exit 1
+            ;;
+        :)
+            echo "Option -$OPTARG requires an argument." >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Check if any containers are running
+if ! docker ps &> /dev/null; then
+    echo "Error: Cannot connect to Docker. Is the Docker daemon running?"
+    exit 1
+fi
+
+# Get the directory of the script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+print_status "Gathering container information..."
+docker ps | python3 /tmp/docker_to_compose.py > "$OUTPUT_FILE"
+
+if [ $? -eq 0 ]; then
+    print_status "Successfully created $OUTPUT_FILE"
+    print_status "You can now use this file with 'docker-compose up -d'"
+    print_warning "Note: You may need to add environment variables and volumes manually"
+else
+    echo "Error: Failed to create docker-compose file"
+    exit 1
+fi
+
+# Clean up temporary Python script
+rm -f /tmp/docker_to_compose.py
+EOL
+
+# Make the script executable
+chmod +x docker-to-compose.sh
+
+# Create a simple help/usage function and add it to the script
+cat >> docker-to-compose.sh << 'EOL'
+
+# Print usage information if --help is used
+if [[ "$1" == "--help" ]]; then
+    echo "Usage: ./docker-to-compose.sh [-o output_file]"
+    echo
+    echo "Options:"
+    echo "  -o FILE    Specify output file (default: docker-compose.yml)"
+    echo "  --help     Show this help message"
+    echo
+    echo "Example:"
+    echo "  ./docker-to-compose.sh -o my-compose.yml"
+    exit 0
+fi
+EOL
