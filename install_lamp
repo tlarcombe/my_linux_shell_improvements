@@ -4,19 +4,30 @@
 set -e
 
 # Variables
-USER="***your_username_here***"
-DOMAIN="***your_servername_here***"
-MYSQL_ROOT_PASSWORD=$(openssl rand -base64 24)  # Generate random MySQL root password
-MYSQL_PHPMYADMIN_PASSWORD=$(openssl rand -base64 24)  # Generate random phpMyAdmin user password
+USER="tlarcombe"
+DOMAIN="grathsrv02"
+MYSQL_ROOT_PASSWORD=$(openssl rand -base64 24)
+MYSQL_PHPMYADMIN_PASSWORD=$(openssl rand -base64 24)
 
 # Function to display installation progress
 echo_progress() {
+    echo "============================================"
     echo "===> $1"
+    echo "============================================"
 }
+
+# Check if script is run with sudo
+if [ "$EUID" -ne 0 ] 
+then 
+    echo "Please run this script with sudo"
+    exit 1
+fi
+
+
 
 # Update package list
 echo_progress "Updating package list"
-apt update
+apt update && apt upgrade -y
 
 # Install Apache
 echo_progress "Installing Apache2"
@@ -24,44 +35,83 @@ apt install -y apache2
 systemctl enable apache2
 systemctl start apache2
 
-# Install MySQL
+# Install MySQL with proper initialization
 echo_progress "Installing MySQL"
 apt install -y mysql-server
-systemctl enable mysql
+
+# Stop MySQL to reconfigure it
+echo_progress "Configuring MySQL"
+systemctl stop mysql
+systemctl set-environment MYSQLD_OPTS="--skip-networking --skip-grant-tables"
 systemctl start mysql
 
-# Secure MySQL installation - Updated section
-echo_progress "Securing MySQL installation"
-# First, set root password using ALTER USER only if using auth_socket
-mysql --user=root <<EOF
-ALTER USER 'root'@'localhost' IDENTIFIED WITH auth_socket;
-CREATE USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASSWORD}';
-GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;
+# Reset MySQL root password and setup initial security
+mysql <<EOF
+FLUSH PRIVILEGES;
+ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASSWORD}';
+FLUSH PRIVILEGES;
+EOF
+
+# Stop MySQL and remove safe mode
+systemctl stop mysql
+systemctl unset-environment MYSQLD_OPTS
+systemctl start mysql
+
+# Now configure MySQL security with the new root password
+mysql -u root -p${MYSQL_ROOT_PASSWORD} <<EOF
 DELETE FROM mysql.user WHERE User='';
 DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
 DROP DATABASE IF EXISTS test;
 DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
-CREATE USER 'phpmyadmin'@'localhost' IDENTIFIED BY '${MYSQL_PHPMYADMIN_PASSWORD}';
+CREATE USER 'phpmyadmin'@'localhost' IDENTIFIED WITH mysql_native_password BY '${MYSQL_PHPMYADMIN_PASSWORD}';
 GRANT ALL PRIVILEGES ON *.* TO 'phpmyadmin'@'localhost' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
 EOF
 
 # Install PHP and required modules
 echo_progress "Installing PHP and modules"
-apt install -y php libapache2-mod-php php-mysql php-cli php-common php-zip php-gd php-mbstring php-curl php-xml php-pear php-bcmath
+apt install -y php \
+    libapache2-mod-php \
+    php-mysql \
+    php-cli \
+    php-common \
+    php-zip \
+    php-gd \
+    php-mbstring \
+    php-curl \
+    php-xml \
+    php-pear \
+    php-bcmath
+
+# Install phpMyAdmin - Configure for Apache and set dbconfig
+echo_progress "Installing phpMyAdmin"
+# Set debconf selections to automate phpMyAdmin installation
+echo "phpmyadmin phpmyadmin/dbconfig-install boolean true" | debconf-set-selections
+echo "phpmyadmin phpmyadmin/app-password-confirm password ${MYSQL_PHPMYADMIN_PASSWORD}" | debconf-set-selections
+echo "phpmyadmin phpmyadmin/mysql/admin-pass password ${MYSQL_ROOT_PASSWORD}" | debconf-set-selections
+echo "phpmyadmin phpmyadmin/mysql/app-pass password ${MYSQL_PHPMYADMIN_PASSWORD}" | debconf-set-selections
+echo "phpmyadmin phpmyadmin/reconfigure-webserver multiselect apache2" | debconf-set-selections
 
 # Install phpMyAdmin
-echo_progress "Installing phpMyAdmin"
-apt install -y phpmyadmin
+DEBIAN_FRONTEND=noninteractive apt install -y phpmyadmin
 
 # Configure Apache virtual hosts
 echo_progress "Configuring virtual hosts"
+
+# Create directories first
+mkdir -p /var/www/test1.${DOMAIN}
+mkdir -p /var/www/test2.${DOMAIN}
 
 # Create test1 virtual host
 cat > /etc/apache2/sites-available/test1.${DOMAIN}.conf <<EOF
 <VirtualHost *:80>
     ServerName test1.${DOMAIN}
     DocumentRoot /var/www/test1.${DOMAIN}
+    <Directory /var/www/test1.${DOMAIN}>
+        Options Indexes FollowSymLinks
+        AllowOverride All
+        Require all granted
+    </Directory>
     ErrorLog \${APACHE_LOG_DIR}/test1.${DOMAIN}_error.log
     CustomLog \${APACHE_LOG_DIR}/test1.${DOMAIN}_access.log combined
 </VirtualHost>
@@ -72,6 +122,11 @@ cat > /etc/apache2/sites-available/test2.${DOMAIN}.conf <<EOF
 <VirtualHost *:80>
     ServerName test2.${DOMAIN}
     DocumentRoot /var/www/test2.${DOMAIN}
+    <Directory /var/www/test2.${DOMAIN}>
+        Options Indexes FollowSymLinks
+        AllowOverride All
+        Require all granted
+    </Directory>
     ErrorLog \${APACHE_LOG_DIR}/test2.${DOMAIN}_error.log
     CustomLog \${APACHE_LOG_DIR}/test2.${DOMAIN}_access.log combined
 </VirtualHost>
@@ -82,16 +137,21 @@ cat > /etc/apache2/sites-available/phpmyadmin.${DOMAIN}.conf <<EOF
 <VirtualHost *:80>
     ServerName phpmyadmin.${DOMAIN}
     DocumentRoot /usr/share/phpmyadmin
+    <Directory /usr/share/phpmyadmin>
+        Options FollowSymLinks
+        DirectoryIndex index.php
+        AllowOverride All
+        Require all granted
+    </Directory>
     ErrorLog \${APACHE_LOG_DIR}/phpmyadmin.${DOMAIN}_error.log
     CustomLog \${APACHE_LOG_DIR}/phpmyadmin.${DOMAIN}_access.log combined
 </VirtualHost>
 EOF
 
 # Create web directories and sample pages
-echo_progress "Creating web directories and sample pages"
+echo_progress "Creating sample pages"
 
 # Test1 site
-mkdir -p /var/www/test1.${DOMAIN}
 cat > /var/www/test1.${DOMAIN}/index.php <<EOF
 <?php
 phpinfo();
@@ -99,7 +159,6 @@ phpinfo();
 EOF
 
 # Test2 site
-mkdir -p /var/www/test2.${DOMAIN}
 cat > /var/www/test2.${DOMAIN}/index.php <<EOF
 <!DOCTYPE html>
 <html>
@@ -110,6 +169,12 @@ cat > /var/www/test2.${DOMAIN}/index.php <<EOF
     <h1>Welcome to Test2</h1>
     <?php
     echo "<p>Server Time: " . date('Y-m-d H:i:s') . "</p>";
+    try {
+        \$pdo = new PDO("mysql:host=localhost;", "phpmyadmin", "${MYSQL_PHPMYADMIN_PASSWORD}");
+        echo "<p style='color: green;'>Database connection successful!</p>";
+    } catch (PDOException \$e) {
+        echo "<p style='color: red;'>Database connection failed: " . \$e->getMessage() . "</p>";
+    }
     ?>
 </body>
 </html>
@@ -124,36 +189,42 @@ usermod -a -G www-data ${USER}
 
 # Enable sites and required modules
 echo_progress "Enabling sites and modules"
+a2enmod rewrite
 a2ensite test1.${DOMAIN}
 a2ensite test2.${DOMAIN}
 a2ensite phpmyadmin.${DOMAIN}
-a2enmod rewrite
 
 # Install Ollama
 echo_progress "Installing Ollama"
 curl -fsSL https://ollama.ai/install.sh | sh
 
-# Install OpenWebUI dependencies and OpenWebUI
-echo_progress "Installing OpenWebUI"
-apt install -y python3-pip
-pip3 install open-webui
-open-webui start
+# Install OpenWebUI
+# echo_progress "Installing OpenWebUI"
+# apt install -y python3-pip
+# pip3 install open-webui
+# open-webui start &
 
 # Restart Apache
 echo_progress "Restarting Apache"
 systemctl restart apache2
 
-# Display completion message and credentials
-echo "============================================"
-echo "Installation Complete!"
-echo "============================================"
+# Create hosts file entries
+echo_progress "Adding hosts file entries"
+echo "127.0.0.1 test1.${DOMAIN}" >> /etc/hosts
+echo "127.0.0.1 test2.${DOMAIN}" >> /etc/hosts
+echo "127.0.0.1 phpmyadmin.${DOMAIN}" >> /etc/hosts
+
+# Save credentials and display completion message
+echo_progress "Saving credentials"
+cat > /root/.lamp_credentials <<EOF
+MySQL Root Password: ${MYSQL_ROOT_PASSWORD}
+phpMyAdmin User Password: ${MYSQL_PHPMYADMIN_PASSWORD}
+EOF
+chmod 600 /root/.lamp_credentials
+
+echo_progress "Installation Complete!"
 echo "MySQL root password: ${MYSQL_ROOT_PASSWORD}"
 echo "phpMyAdmin user password: ${MYSQL_PHPMYADMIN_PASSWORD}"
-echo ""
-echo "Please add these entries to your hosts file or DNS:"
-echo "127.0.0.1 test1.${DOMAIN}"
-echo "127.0.0.1 test2.${DOMAIN}"
-echo "127.0.0.1 phpmyadmin.${DOMAIN}"
 echo ""
 echo "Sites available at:"
 echo "http://test1.${DOMAIN}"
@@ -161,12 +232,7 @@ echo "http://test2.${DOMAIN}"
 echo "http://phpmyadmin.${DOMAIN}"
 echo ""
 echo "OpenWebUI should be available at http://localhost:8080"
-echo "============================================"
-
-# Save credentials to a secure file
-echo_progress "Saving credentials to /root/.lamp_credentials"
-cat > /root/.lamp_credentials <<EOF
-MySQL Root Password: ${MYSQL_ROOT_PASSWORD}
-phpMyAdmin User Password: ${MYSQL_PHPMYADMIN_PASSWORD}
-EOF
-chmod 600 /root/.lamp_credentials
+echo ""
+echo "Credentials have been saved to /root/.lamp_credentials"
+echo ""
+echo "Please wait a few minutes for OpenWebUI to fully initialize"
