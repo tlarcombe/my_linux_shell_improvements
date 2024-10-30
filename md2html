@@ -1,0 +1,47 @@
+#!/bin/bash
+
+# Check if pandoc is installed
+if ! command -v pandoc &> /dev/null; then
+    echo "Error: pandoc is not installed. Please install it first."
+    exit 1
+fi
+
+# Prompt for filename
+read -p "Enter the markdown filename (without .md extension): " filename
+
+# Input validation
+if [ -z "$filename" ]; then
+    echo "Error: Filename cannot be empty"
+    exit 1
+fi
+
+# Add .md extension
+input_file="${filename}.md"
+output_file="${filename}.html"
+
+# Check if input file exists
+if [ ! -f "$input_file" ]; then
+    echo "Error: File $input_file does not exist"
+    exit 1
+fi
+
+# Check if input file is readable
+if [ ! -r "$input_file" ]; then
+    echo "Error: Cannot read $input_file"
+    exit 1
+fi
+
+# Check if output directory is writable
+if [ ! -w "$(dirname "$output_file")" ]; then
+    echo "Error: Cannot write to output directory"
+    exit 1
+fi
+
+# Convert markdown to HTML
+echo "Converting $input_file to $output_file..."
+if pandoc -f markdown "$input_file" > "$output_file"; then
+    echo "Conversion successful: Created $output_file"
+else
+    echo "Error: Conversion failed"
+    exit 1
+fi
