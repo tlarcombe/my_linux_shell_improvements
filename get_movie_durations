@@ -1,0 +1,100 @@
+# get_movie_durations is used to show runtimes to aid downloading subtitles.
+
+#!/bin/bash
+
+# Check if ffprobe is installed
+check_dependencies() {
+    if ! command -v ffprobe &> /dev/null; then
+        echo "Error: ffprobe is not installed. Please install ffmpeg package first."
+        echo "You can install it using:"
+        echo "  Ubuntu/Debian: sudo apt-get install ffmpeg"
+        echo "  MacOS: brew install ffmpeg"
+        echo "  Windows: chocolatey install ffmpeg"
+        exit 1
+    fi
+}
+
+# Function to convert seconds to hours:minutes:seconds format
+format_duration() {
+    local seconds=$1
+    local hours=$((seconds / 3600))
+    local minutes=$(( (seconds % 3600) / 60 ))
+    local remaining_seconds=$((seconds % 60))
+    
+    if [ $hours -gt 0 ]; then
+        printf "%02d:%02d:%02d" $hours $minutes $remaining_seconds
+    else
+        printf "%02d:%02d" $minutes $remaining_seconds
+    fi
+}
+
+# Function to get duration of a single file
+get_duration() {
+    local file="$1"
+    # Use ffprobe to get duration in seconds
+    duration=$(ffprobe -v quiet -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null)
+    
+    if [ $? -eq 0 ] && [ ! -z "$duration" ]; then
+        # Round the duration to nearest second
+        duration=$(printf "%.0f" "$duration")
+        formatted_duration=$(format_duration $duration)
+        echo "$formatted_duration"
+        return 0
+    else
+        echo "Error"
+        return 1
+    fi
+}
+
+# Main script
+main() {
+    local dir="${1:-.}"  # Use current directory if none specified
+    local total_files=0
+    local processed_files=0
+    local failed_files=0
+    
+    # Check for ffprobe
+    check_dependencies
+
+    echo "Scanning directory: $dir"
+    echo "----------------------------------------"
+
+    # Process each video file
+    while IFS= read -r file; do
+        # Skip empty lines
+        [ -z "$file" ] && continue
+        
+        # Skip if not a regular file
+        [ ! -f "$file" ] && continue
+        
+        # Check if file extension matches our supported formats
+        if [[ "$file" =~ \.(mkv|mp4|avi|mov|wmv|flv|m4v|webm)$ ]]; then
+            ((total_files++))
+            filename=$(basename "$file")
+            duration=$(get_duration "$file")
+            
+            if [ "$duration" != "Error" ]; then
+                printf "%-70s %s\n" "${filename:0:67}..." "$duration"
+                ((processed_files++))
+            else
+                printf "%-70s %s\n" "${filename:0:67}..." "Failed to process"
+                ((failed_files++))
+            fi
+        fi
+    done < <(find "$dir" -type f -print | sort)
+
+    echo "----------------------------------------"
+    echo "Summary:"
+    echo "Total files found: $total_files"
+    echo "Successfully processed: $processed_files"
+    echo "Failed to process: $failed_files"
+}
+
+# Handle script arguments
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    echo "Usage: $0 [directory]"
+    echo "If no directory is specified, the current directory will be used."
+    exit 0
+fi
+
+main "$1"
