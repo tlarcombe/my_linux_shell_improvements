@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+import sys
+import requests
+import json
+import subprocess
+import os
+import logging
+import re
+
+# Set up logging
+logging.basicConfig(
+    filename='/tmp/shellai.log',
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+class ShellAI:
+    def __init__(self, ollama_url="http://192.168.1.112:11434"):
+        self.ollama_url = ollama_url
+        self.model = "llama3.2:1b"
+        logging.info(f"Initialized ShellAI with URL: {ollama_url}")
+
+    def clean_response(self, response):
+        """Clean the response of markdown and unnecessary formatting"""
+        # Remove code blocks, backticks, and extra whitespace
+        response = re.sub(r'```.*?\n', '', response)
+        response = re.sub(r'```', '', response)
+        response = re.sub(r'`', '', response)
+        response = response.strip()
+        # Ensure we have a single command string
+        lines = [line.strip() for line in response.split('\n') if line.strip()]
+        return lines[0] if lines else ""
+
+    def query_ollama(self, prompt):
+        """Send a prompt to Ollama and get the response"""
+        headers = {'Content-Type': 'application/json'}
+        system_prompt = """You are a Linux command interpreter. For each natural language command:
+                          1. Return ONLY a SINGLE LINE containing the command(s) and content
+                          2. Use && to chain multiple commands
+                          3. For file editing, format as: COMMANDS|||CONTENT
+                          4. Example: 'touch index.html && nano index.html|||<!DOCTYPE html><html><head><title></title></head><body></body></html>'
+                          5. DO NOT split commands across multiple lines
+                          6. DO NOT use markdown or backticks"""
+        
+        data = {
+            "model": self.model,
+            "prompt": f"{system_prompt}\nCommand: {prompt}",
+            "stream": False
+        }
+
+        logging.debug(f"Sending request to Ollama with prompt: {prompt}")
+        try:
+            response = requests.post(f"{self.ollama_url}/api/generate", 
+                                  headers=headers, 
+                                  data=json.dumps(data))
+            response.raise_for_status()
+            result = self.clean_response(response.json()['response'])
+            logging.info(f"Received cleaned response from Ollama: {result}")
+            return result
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Error communicating with Ollama: {e}")
+            print(f"Error communicating with Ollama: {e}", file=sys.stderr)
+            return None
+        except KeyError as e:
+            logging.error(f"Unexpected response format: {e}")
+            print(f"Unexpected response format from Ollama", file=sys.stderr)
+            return None
+
+    def execute_command(self, command_response):
+        """Execute the command and handle content insertion if needed"""
+        try:
+            # Split command and content if separator exists
+            parts = command_response.split('|||')
+            command = parts[0].strip()
+            content = parts[1].strip() if len(parts) > 1 else None
+
+            print(f"Executing: {command}")
+            logging.debug(f"Executing command: {command}")
+
+            if content and ('nano' in command or 'vim' in command):
+                # Extract the filename
+                file_pattern = r'(?:^|&&\s*)\w+\s+([\w.-]+)'
+                match = re.search(file_pattern, command)
+                if not match:
+                    raise ValueError("Could not determine filename from command")
+                
+                file_name = match.group(1)
+                
+                # Create the file with content first
+                with open(file_name, 'w') as f:
+                    f.write(content)
+                
+                # Run nano in the foreground with proper terminal handling
+                editor_cmd = ['nano', file_name]
+                process = subprocess.Popen(editor_cmd, 
+                                        stdin=sys.stdin,
+                                        stdout=sys.stdout,
+                                        stderr=sys.stderr)
+                process.wait()  # Wait for the editor to close
+            else:
+                # For non-editor commands
+                process = subprocess.Popen(command, 
+                                        shell=True,
+                                        stdin=sys.stdin,
+                                        stdout=sys.stdout,
+                                        stderr=sys.stderr)
+                process.wait()
+
+        except subprocess.SubprocessError as e:
+            error_msg = f"Error executing command: {e}"
+            print(error_msg, file=sys.stderr)
+            logging.error(error_msg)
+        except Exception as e:
+            error_msg = f"Unexpected error: {e}"
+            print(error_msg, file=sys.stderr)
+            logging.error(error_msg)
+
+def main():
+    logging.info("ShellAI started")
+    if len(sys.argv) < 2:
+        logging.error("No command provided")
+        print("Usage: shellai 'your natural language command'", file=sys.stderr)
+        sys.exit(1)
+
+    natural_command = " ".join(sys.argv[1:])
+    logging.info(f"Received command: {natural_command}")
+    
+    ai = ShellAI()
+    command_response = ai.query_ollama(natural_command)
+    
+    if command_response:
+        ai.execute_command(command_response)
+
+if __name__ == "__main__":
+    main()
