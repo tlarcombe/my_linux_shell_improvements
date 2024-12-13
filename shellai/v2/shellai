@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+import sys
+import requests
+import json
+import subprocess
+import os
+import logging
+import re
+import yaml
+import time
+from pathlib import Path
+from logging.handlers import RotatingFileHandler
+from datetime import datetime
+import string
+from typing import Optional, Dict, List, Any
+import shutil
+
+class Config:
+    def __init__(self):
+        self.config_dir = Path.home() / '.config' / 'shellai'
+        self.config_file = self.config_dir / 'config.yaml'
+        self.ensure_config_dir()
+        self.load_config()
+
+    def ensure_config_dir(self) -> None:
+        """Create config directory and default config if they don't exist"""
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        
+        if not self.config_file.exists():
+            default_config = Path('/usr/local/bin/sh/shellai-config.yaml')
+            if default_config.exists():
+                shutil.copy(default_config, self.config_file)
+            else:
+                print("Warning: Default config not found at /usr/local/bin/sh/shellai-config.yaml")
+
+    def load_config(self) -> None:
+        """Load configuration from YAML file"""
+        try:
+            with open(self.config_file) as f:
+                self.config = yaml.safe_load(f)
+        except Exception as e:
+            print(f"Error loading config: {e}. Using defaults.")
+            self.config = {
+                'ollama': {
+                    'endpoint': 'http://192.168.1.112:11434',
+                    'model': 'llama3.2:1b',
+                    'timeout': 30
+                },
+                'commands': {
+                    'timeout_prompt': 5,
+                    'history_file': '~/.config/shellai/history.jsonl',
+                    'max_history': 1000
+                },
+                'safety': {
+                    'confirm_destructive': True,
+                    'protected_dirs': ['/', '/home', '/etc', '/usr'],
+                    'protected_files': ['.bashrc', '.bash_profile', '.ssh/config']
+                },
+                'logging': {
+                    'level': 'INFO',
+                    'file': '~/.config/shellai/shellai.log',
+                    'max_size': 10485760,
+                    'backup_count': 3
+                }
+            }
+
+class CommandHistory:
+    def __init__(self, history_file: Path, max_entries: int):
+        self.history_file = history_file
+        self.max_entries = max_entries
+        self.ensure_history_file()
+
+    def ensure_history_file(self) -> None:
+        """Create history file if it doesn't exist"""
+        self.history_file.parent.mkdir(parents=True, exist_ok=True)
+        if not self.history_file.exists():
+            self.history_file.touch()
+
+    def add_entry(self, natural_command: str, shell_command: str, success: bool) -> None:
+        """Add a new command to history"""
+        entry = {
+            'timestamp': datetime.now().isoformat(),
+            'natural_command': natural_command,
+            'shell_command': shell_command,
+            'success': success
+        }
+        
+        entries = self.read_entries()
+        entries.append(entry)
+        
+        # Keep only the latest max_entries
+        if len(entries) > self.max_entries:
+            entries = entries[-self.max_entries:]
+        
+        with open(self.history_file, 'w') as f:
+            for entry in entries:
+                f.write(json.dumps(entry) + '\n')
+
+    def read_entries(self) -> List[Dict]:
+        """Read all history entries"""
+        entries = []
+        with open(self.history_file) as f:
+            for line in f:
+                if line.strip():
+                    entries.append(json.loads(line))
+        return entries
+
+class SafetyChecker:
+    def __init__(self, protected_dirs: List[str], protected_files: List[str]):
+        self.protected_dirs = [Path(d).expanduser() for d in protected_dirs]
+        self.protected_files = [Path(f).expanduser() for f in protected_files]
+        self.dangerous_commands = {'rm', 'mv', 'dd', 'mkfs', 'fdisk'}
+
+    def is_dangerous(self, command: str) -> bool:
+        """Check if a command is potentially dangerous"""
+        cmd_parts = command.split()
+        if not cmd_parts:
+            return False
+        
+        base_cmd = cmd_parts[0]
+        if base_cmd in self.dangerous_commands:
+            return True
+            
+        # Check for protected directories and files
+        for path in cmd_parts[1:]:
+            path = Path(path).expanduser()
+            if any(str(path).startswith(str(p)) for p in self.protected_dirs):
+                return True
+            if path in self.protected_files:
+                return True
+                
+        return False
+
+    def confirm_execution(self, command: str) -> bool:
+        """Ask for confirmation before executing dangerous commands"""
+        if not self.is_dangerous(command):
+            return True
+            
+        print(f"\nWARNING: The following command may be destructive:")
+        print(f"  {command}")
+        response = input("Are you sure you want to execute this command? (y/N): ")
+        return response.lower() == 'y'
+
+class TemplateEngine:
+    def __init__(self, templates: Dict[str, str]):
+        self.templates = templates
+
+    def apply_template(self, template_name: str, variables: Dict[str, str]) -> str:
+        """Apply variables to a template"""
+        if template_name not in self.templates:
+            raise ValueError(f"Template '{template_name}' not found")
+            
+        template = string.Template(self.templates[template_name])
+        return template.safe_substitute(variables)
+
+class ShellAI:
+    def __init__(self, config: Config):
+        self.config = config
+        self.history = CommandHistory(
+            Path(self.config.config['commands']['history_file']).expanduser(),
+            self.config.config['commands']['max_history']
+        )
+        self.safety = SafetyChecker(
+            self.config.config['safety']['protected_dirs'],
+            self.config.config['safety']['protected_files']
+        )
+        self.template_engine = TemplateEngine(self.config.config.get('templates', {}))
+        self.setup_logging()
+
+    def setup_logging(self) -> None:
+        """Configure logging with rotation"""
+        log_file = Path(self.config.config['logging']['file']).expanduser()
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        handler = RotatingFileHandler(
+            log_file,
+            maxBytes=self.config.config['logging']['max_size'],
+            backupCount=self.config.config['logging']['backup_count']
+        )
+        
+        logging.basicConfig(
+            level=getattr(logging, self.config.config['logging']['level']),
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[handler]
+        )
+
+    def clean_response(self, response: str) -> str:
+        """Clean the response of markdown and unnecessary formatting"""
+        response = re.sub(r'```.*?\n', '', response)
+        response = re.sub(r'```', '', response)
+        response = re.sub(r'`', '', response)
+        response = response.strip()
+        lines = [line.strip() for line in response.split('\n') if line.strip()]
+        return lines[0] if lines else ""
+
+    def query_ollama(self, prompt: str) -> Optional[str]:
+        """Send a prompt to Ollama and get the response"""
+        headers = {'Content-Type': 'application/json'}
+        system_prompt = """You are a Linux command interpreter. For each natural language command:
+                          1. Return ONLY a SINGLE LINE containing the command(s) and content
+                          2. Use && to chain multiple commands
+                          3. For file editing, format as: COMMANDS|||CONTENT
+                          4. Use available templates when relevant (html, python)
+                          5. DO NOT split commands across multiple lines
+                          6. DO NOT use markdown or backticks"""
+        
+        data = {
+            "model": self.config.config['ollama']['model'],
+            "prompt": f"{system_prompt}\nCommand: {prompt}",
+            "stream": False
+        }
+
+        try:
+            response = requests.post(
+                f"{self.config.config['ollama']['endpoint']}/api/generate",
+                headers=headers,
+                data=json.dumps(data),
+                timeout=self.config.config['ollama']['timeout']
+            )
+            response.raise_for_status()
+            result = self.clean_response(response.json()['response'])
+            logging.info(f"Received cleaned response from Ollama: {result}")
+            return result
+        except Exception as e:
+            logging.error(f"Error in Ollama query: {e}")
+            print(f"Error communicating with Ollama: {e}", file=sys.stderr)
+            return None
+
+    def execute_command(self, command_response: str) -> bool:
+        """Execute the command and handle content insertion if needed"""
+        try:
+            parts = command_response.split('|||')
+            command = parts[0].strip()
+            content = parts[1].strip() if len(parts) > 1 else None
+
+            # Safety check
+            if self.config.config['safety']['confirm_destructive']:
+                if not self.safety.confirm_execution(command):
+                    print("Command execution cancelled.")
+                    return False
+
+            print(f"Executing: {command}")
+            logging.debug(f"Executing command: {command}")
+
+            if content and ('nano' in command or 'vim' in command):
+                file_pattern = r'(?:^|&&\s*)\w+\s+([\w.-]+)'
+                match = re.search(file_pattern, command)
+                if not match:
+                    raise ValueError("Could not determine filename from command")
+                
+                file_name = match.group(1)
+                
+                # Check if we should use a template
+                if file_name.endswith('.html'):
+                    content = self.template_engine.apply_template('html', {
+                        'title': 'New Page',
+                        'content': content
+                    })
+                elif file_name.endswith('.py'):
+                    content = self.template_engine.apply_template('python', {
+                        'description': 'Auto-generated Python script',
+                        'content': content
+                    })
+
+                with open(file_name, 'w') as f:
+                    f.write(content)
+                
+                process = subprocess.Popen(
+                    ['nano', file_name],
+                    stdin=sys.stdin,
+                    stdout=sys.stdout,
+                    stderr=sys.stderr
+                )
+                process.wait()
+            else:
+                process = subprocess.Popen(
+                    command,
+                    shell=True,
+                    stdin=sys.stdin,
+                    stdout=sys.stdout,
+                    stderr=sys.stderr
+                )
+                process.wait()
+
+            return process.returncode == 0
+
+        except Exception as e:
+            error_msg = f"Error executing command: {e}"
+            print(error_msg, file=sys.stderr)
+            logging.error(error_msg)
+            return False
+
+def main():
+    config = Config()
+    ai = ShellAI(config)
+
+    if len(sys.argv) < 2:
+        print("Usage: shellai 'your natural language command'", file=sys.stderr)
+        sys.exit(1)
+
+    natural_command = " ".join(sys.argv[1:])
+    logging.info(f"Received command: {natural_command}")
+    
+    command_response = ai.query_ollama(natural_command)
+    
+    if command_response:
+        success = ai.execute_command(command_response)
+        ai.history.add_entry(natural_command, command_response, success)
+
+if __name__ == "__main__":
+    main()
