@@ -1,0 +1,23 @@
+## Add this to .bashrc to capture unrecognised commands
+## Make sure the directory you create the shellai command is in the path
+
+
+command_not_found_handle() {
+    echo "Command not found: $1"
+    echo -n "You fat fingered twat. Did you mistype or did you want some help? Press Enter if you mistyped, or wait 5 seconds for AI assistance..."
+    
+    read -t 5 && {
+        echo "Command aborted."
+        return 127
+    } || {
+        echo "Invoking AI assistant..."
+        if [ -x /usr/local/bin/sh/shellai ]; then
+            /usr/local/bin/sh/shellai "$*"
+            return $?
+        else
+            echo "AI assistant not found!"
+            return 127
+        fi
+    }
+}
+
