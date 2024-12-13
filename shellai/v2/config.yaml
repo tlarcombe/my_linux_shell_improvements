@@ -1,0 +1,61 @@
+# ShellAI Configuration File
+# Location: ~/.config/shellai/config.yaml
+
+# Ollama Settings
+ollama:
+  endpoint: "http://192.168.1.112:11434"
+  model: "llama3.2:1b"
+  timeout: 30  # seconds
+
+# Command Handling
+commands:
+  timeout_prompt: 5  # seconds to wait before AI activation
+  history_file: "~/.config/shellai/history.jsonl"
+  max_history: 1000
+
+# Safety Settings
+safety:
+  confirm_destructive: true  # Ask before rm, mv, etc.
+  protected_dirs: 
+    - "/"
+    - "/home"
+    - "/etc"
+    - "/usr"
+  protected_files:
+    - ".bashrc"
+    - ".bash_profile"
+    - ".ssh/config"
+
+# Templates
+templates:
+  html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>${title}</title>
+    </head>
+    <body>
+        ${content}
+    </body>
+    </html>
+
+  python: |
+    #!/usr/bin/env python3
+    """
+    ${description}
+    """
+
+    def main():
+        ${content}
+
+    if __name__ == "__main__":
+        main()
+
+# Logging
+logging:
+  level: "INFO"
+  file: "~/.config/shellai/shellai.log"
+  max_size: 10485760  # 10MB
+  backup_count: 3
