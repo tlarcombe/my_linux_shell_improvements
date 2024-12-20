@@ -1,0 +1,116 @@
+#!/bin/bash
+
+# Colors for output
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Function to print colored messages
+print_message() {
+    echo -e "${YELLOW}$1${NC}"
+}
+
+print_success() {
+    echo -e "${GREEN}$1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}$1${NC}"
+}
+
+# Function to check if last command was successful
+check_status() {
+    if [ $? -eq 0 ]; then
+        print_success "Success: $1"
+        return 0
+    else
+        print_error "Failed: $1"
+        return 1
+    fi
+}
+
+# Check if script is run as root
+if [ "$EUID" -ne 0 ]; then
+    print_error "Please run this script as root (with sudo)"
+    exit 1
+fi
+
+# Initialize error counter
+errors=0
+
+# Step 1: Stop Tailscale service
+print_message "Step 1: Would you like to stop the Tailscale service? (y/n)"
+read -r response
+if [[ "$response" =~ ^[Yy]$ ]]; then
+    systemctl stop tailscaled
+    check_status "Stopping Tailscale service"
+    ((errors+=$?))
+fi
+
+# Step 2: Disable Tailscale service
+print_message "Step 2: Would you like to disable Tailscale service from starting at boot? (y/n)"
+read -r response
+if [[ "$response" =~ ^[Yy]$ ]]; then
+    systemctl disable tailscaled
+    check_status "Disabling Tailscale service"
+    ((errors+=$?))
+fi
+
+# Step 3: Remove Tailscale package
+print_message "Step 3: Would you like to remove the Tailscale package? (y/n)"
+read -r response
+if [[ "$response" =~ ^[Yy]$ ]]; then
+    pacman -R tailscale
+    check_status "Removing Tailscale package"
+    ((errors+=$?))
+fi
+
+# Step 4: Remove Tailscale directories and files
+print_message "Step 4: Would you like to remove Tailscale configuration files and directories? (y/n)"
+read -r response
+if [[ "$response" =~ ^[Yy]$ ]]; then
+    rm -rf /var/lib/tailscale
+    check_status "Removing /var/lib/tailscale"
+    ((errors+=$?))
+    
+    rm -rf /var/run/tailscale
+    check_status "Removing /var/run/tailscale"
+    ((errors+=$?))
+    
+    rm -rf /etc/tailscale
+    check_status "Removing /etc/tailscale"
+    ((errors+=$?))
+fi
+
+# Step 5: Remove user-specific Tailscale files
+print_message "Step 5: Would you like to remove user-specific Tailscale configuration? (y/n)"
+read -r response
+if [[ "$response" =~ ^[Yy]$ ]]; then
+    # Get the actual user who ran sudo
+    REAL_USER=$(logname || echo $SUDO_USER)
+    if [ -n "$REAL_USER" ]; then
+        rm -rf /home/$REAL_USER/.tailscale
+        check_status "Removing user-specific Tailscale configuration"
+        ((errors+=$?))
+    else
+        print_error "Could not determine the real user"
+        ((errors+=1))
+    fi
+fi
+
+# Final status
+echo ""
+if [ $errors -eq 0 ]; then
+    print_success "✔ Tailscale removal completed successfully!"
+    echo ""
+    print_message "To reinstall Tailscale, you can run:"
+    echo "sudo pacman -S tailscale"
+    echo "sudo systemctl enable --now tailscaled"
+    echo "sudo tailscale up"
+else
+    print_error "✘ Tailscale removal completed with $errors error(s)"
+    echo "Please check the messages above for details"
+fi
+
+exit $errors
