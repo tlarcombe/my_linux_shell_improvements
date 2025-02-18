@@ -1,0 +1,126 @@
+#!/bin/bash
+
+## Let's try to automatically create a full .nfo file for kodi to use to properly identify tv series
+## Requires jq
+
+
+# API Keys - Replace these with your actual API keys
+TVDB_API_KEY="your_tvdb_api_key"
+TMDB_API_KEY="your_tmdb_api_key"
+OMDB_API_KEY="your_omdb_api_key"  # for IMDb data
+
+# Function to URL encode strings
+urlencode() {
+    local string="$1"
+    echo "$string" | curl -Gso /dev/null -w %{url_effective} --data-urlencode @- "" | cut -c 3-
+}
+
+# Function to get TVDB token
+get_tvdb_token() {
+    local token=$(curl -s -X POST \
+        -H "Content-Type: application/json" \
+        -d "{\"apikey\":\"$TVDB_API_KEY\"}" \
+        "https://api.thetvdb.com/login" | jq -r '.token')
+    echo "$token"
+}
+
+# Function to search TVDB
+search_tvdb() {
+    local show_name="$1"
+    local year="$2"
+    local token="$3"
+    
+    local result=$(curl -s \
+        -H "Authorization: Bearer $token" \
+        -H "Content-Type: application/json" \
+        "https://api.thetvdb.com/search/series?name=$(urlencode "$show_name")" | jq '.')
+    
+    # Filter by year if provided
+    if [ ! -z "$year" ]; then
+        result=$(echo "$result" | jq --arg year "$year" '.data[] | select(.firstAired | startswith($year))')
+    else
+        result=$(echo "$result" | jq '.data[0]')
+    fi
+    
+    echo "$result"
+}
+
+# Function to search TMDB
+search_tmdb() {
+    local show_name="$1"
+    local year="$2"
+    
+    local result=$(curl -s \
+        "https://api.themoviedb.org/3/search/tv?api_key=$TMDB_API_KEY&query=$(urlencode "$show_name")" | jq '.')
+    
+    if [ ! -z "$year" ]; then
+        result=$(echo "$result" | jq --arg year "$year" '.results[] | select(.first_air_date | startswith($year))')
+    else
+        result=$(echo "$result" | jq '.results[0]')
+    fi
+    
+    echo "$result"
+}
+
+# Function to search OMDB (IMDb data)
+search_omdb() {
+    local show_name="$1"
+    local year="$2"
+    
+    local url="http://www.omdbapi.com/?apikey=$OMDB_API_KEY&t=$(urlencode "$show_name")&type=series"
+    if [ ! -z "$year" ]; then
+        url="${url}&y=$year"
+    fi
+    
+    local result=$(curl -s "$url" | jq '.')
+    echo "$result"
+}
+
+# Function to create NFO file
+create_nfo() {
+    local tvdb_data="$1"
+    local tmdb_data="$2"
+    local omdb_data="$3"
+    
+    cat > tvshow.nfo << EOF
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<tvshow>
+    <title>$(echo "$tvdb_data" | jq -r '.seriesName')</title>
+    <originaltitle>$(echo "$tvdb_data" | jq -r '.seriesName')</originaltitle>
+    <showtitle>$(echo "$tvdb_data" | jq -r '.seriesName')</showtitle>
+    <uniqueid type="tvdb">$(echo "$tvdb_data" | jq -r '.id')</uniqueid>
+    <uniqueid type="imdb">$(echo "$omdb_data" | jq -r '.imdbID')</uniqueid>
+    <uniqueid type="tmdb">$(echo "$tmdb_data" | jq -r '.id')</uniqueid>
+    <year>$(echo "$tvdb_data" | jq -r '.firstAired' | cut -d'-' -f1)</year>
+    <season>-1</season>
+    <episode>-1</episode>
+    <plot>$(echo "$tvdb_data" | jq -r '.overview')</plot>
+    <runtime>$(echo "$omdb_data" | jq -r '.Runtime' | sed 's/ min//')</runtime>
+    <genre>$(echo "$tvdb_data" | jq -r '.genre[]' | head -n1)</genre>
+    <studio>$(echo "$tvdb_data" | jq -r '.network')</studio>
+    <premiered>$(echo "$tvdb_data" | jq -r '.firstAired')</premiered>
+    <status>$(echo "$tvdb_data" | jq -r '.status')</status>
+    <rating>$(echo "$tmdb_data" | jq -r '.vote_average')</rating>
+</tvshow>
+EOF
+}
+
+# Main script
+echo "Enter TV show name:"
+read show_name
+
+echo "Enter year (optional, press Enter to skip):"
+read year
+
+# Get TVDB token
+tvdb_token=$(get_tvdb_token)
+
+# Search all services
+tvdb_data=$(search_tvdb "$show_name" "$year" "$tvdb_token")
+tmdb_data=$(search_tmdb "$show_name" "$year")
+omdb_data=$(search_omdb "$show_name" "$year")
+
+# Create NFO file
+create_nfo "$tvdb_data" "$tmdb_data" "$omdb_data"
+
+echo "tvshow.nfo has been created in the current directory."
