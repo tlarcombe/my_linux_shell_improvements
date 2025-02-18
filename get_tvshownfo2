@@ -1,0 +1,183 @@
+#!/bin/bash
+
+# API Keys - Replace these with your actual API keys
+TVDB_API_KEY="your_tvdb_api_key"
+TMDB_API_KEY="your_tmdb_api_key"
+
+# Function to URL encode strings
+urlencode() {
+    python3 -c "import urllib.parse; print(urllib.parse.quote('''$1'''))"
+}
+
+# Error handling function
+handle_error() {
+    echo "Error: $1" >&2
+    exit 1
+}
+
+# Function to get TVDB token
+get_tvdb_token() {
+    local token
+    token=$(curl -s -X POST \
+        -H "Content-Type: application/json" \
+        -d "{\"apikey\":\"$TVDB_API_KEY\"}" \
+        "https://api.thetvdb.com/login" | jq -r '.token')
+    
+    if [ -z "$token" ] || [ "$token" = "null" ]; then
+        handle_error "Failed to get TVDB token. Check your API key."
+    fi
+    echo "$token"
+}
+
+# Function to search TVDB
+search_tvdb() {
+    local show_name="$1"
+    local year="$2"
+    local token="$3"
+    local result
+    
+    encoded_name=$(urlencode "$show_name")
+    if [ -z "$encoded_name" ]; then
+        handle_error "Failed to encode show name"
+    fi
+    
+    result=$(curl -s \
+        -H "Authorization: Bearer $token" \
+        -H "Content-Type: application/json" \
+        "https://api.thetvdb.com/search/series?name=$encoded_name")
+    
+    if [ -z "$result" ] || [ "$(echo "$result" | jq -r '.data')" = "null" ]; then
+        echo "Warning: No results found in TVDB for '$show_name'" >&2
+        return 1
+    fi
+    
+    # Filter by year if provided
+    if [ ! -z "$year" ]; then
+        filtered_result=$(echo "$result" | jq --arg year "$year" '.data[] | select(.firstAired | startswith($year))')
+        if [ ! -z "$filtered_result" ]; then
+            result="{\"data\": [$filtered_result]}"
+        else
+            result=$(echo "$result" | jq '{data: [.data[0]]}')
+        fi
+    else
+        result=$(echo "$result" | jq '{data: [.data[0]]}')
+    fi
+    
+    echo "$result"
+}
+
+# Function to search TMDB
+search_tmdb() {
+    local show_name="$1"
+    local year="$2"
+    local result
+    
+    encoded_name=$(urlencode "$show_name")
+    if [ -z "$encoded_name" ]; then
+        handle_error "Failed to encode show name"
+    fi
+    
+    result=$(curl -s \
+        "https://api.themoviedb.org/3/search/tv?api_key=$TMDB_API_KEY&query=$encoded_name")
+    
+    if [ -z "$result" ] || [ "$(echo "$result" | jq -r '.results')" = "null" ]; then
+        echo "Warning: No results found in TMDB for '$show_name'" >&2
+        return 1
+    fi
+    
+    if [ ! -z "$year" ]; then
+        filtered_result=$(echo "$result" | jq --arg year "$year" '.results[] | select(.first_air_date | startswith($year))')
+        if [ ! -z "$filtered_result" ]; then
+            result="{\"results\": [$filtered_result]}"
+        else
+            result=$(echo "$result" | jq '{results: [.results[0]]}')
+        fi
+    else
+        result=$(echo "$result" | jq '{results: [.results[0]]}')
+    fi
+    
+    echo "$result"
+}
+
+# Function to create NFO file
+create_nfo() {
+    local tvdb_data="$1"
+    local tmdb_data="$2"
+    local default_runtime="45"
+    
+    # Extract data with fallbacks
+    local title=$(echo "$tvdb_data" | jq -r '.data[0].seriesName // empty')
+    local tvdb_id=$(echo "$tvdb_data" | jq -r '.data[0].id // empty')
+    local tmdb_id=$(echo "$tmdb_data" | jq -r '.results[0].id // empty')
+    local first_aired=$(echo "$tvdb_data" | jq -r '.data[0].firstAired // empty')
+    local year=$(echo "$first_aired" | cut -d'-' -f1)
+    local overview=$(echo "$tvdb_data" | jq -r '.data[0].overview // empty')
+    local genre=$(echo "$tvdb_data" | jq -r '.data[0].genre[0] // empty')
+    local network=$(echo "$tvdb_data" | jq -r '.data[0].network // empty')
+    local status=$(echo "$tvdb_data" | jq -r '.data[0].status // empty')
+    local rating=$(echo "$tmdb_data" | jq -r '.results[0].vote_average // empty')
+    
+    if [ -z "$title" ]; then
+        handle_error "No valid show data found"
+    fi
+    
+    cat > tvshow.nfo << EOF
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<tvshow>
+    <title>${title}</title>
+    <originaltitle>${title}</originaltitle>
+    <showtitle>${title}</showtitle>
+    <uniqueid type="tvdb">${tvdb_id}</uniqueid>
+    <!-- IMDb ID will be added when OMDB API is enabled -->
+    <uniqueid type="tmdb">${tmdb_id}</uniqueid>
+    <year>${year}</year>
+    <season>-1</season>
+    <episode>-1</episode>
+    <plot>${overview}</plot>
+    <runtime>${default_runtime}</runtime>
+    <genre>${genre}</genre>
+    <studio>${network}</studio>
+    <premiered>${first_aired}</premiered>
+    <status>${status}</status>
+    <rating>${rating}</rating>
+</tvshow>
+EOF
+
+    echo "Created tvshow.nfo for: $title"
+}
+
+# Check for required commands
+for cmd in curl jq python3; do
+    if ! command -v $cmd &> /dev/null; then
+        handle_error "Required command '$cmd' not found. Please install it first."
+    fi
+done
+
+# Check for API keys
+if [ "$TVDB_API_KEY" = "your_tvdb_api_key" ] || [ "$TMDB_API_KEY" = "your_tmdb_api_key" ]; then
+    handle_error "Please set your API keys in the script first"
+fi
+
+# Main script
+echo "Enter TV show name:"
+read show_name
+
+if [ -z "$show_name" ]; then
+    handle_error "Show name cannot be empty"
+fi
+
+echo "Enter year (optional, press Enter to skip):"
+read year
+
+# Get TVDB token
+echo "Getting TVDB token..."
+tvdb_token=$(get_tvdb_token)
+
+# Search services
+echo "Searching TVDB..."
+tvdb_data=$(search_tvdb "$show_name" "$year" "$tvdb_token")
+echo "Searching TMDB..."
+tmdb_data=$(search_tmdb "$show_name" "$year")
+
+# Create NFO file
+create_nfo "$tvdb_data" "$tmdb_data"
