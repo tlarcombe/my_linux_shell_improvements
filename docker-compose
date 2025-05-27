@@ -1,0 +1,8 @@
+#!/bin/bash
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "ERROR: docker-compose is deprecated!"
+echo "Please use 'docker compose' (without hyphen) instead."
+echo "Original version: /usr/bin/docker-compose-deprecated"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+exit 1
